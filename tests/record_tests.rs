@@ -20,7 +20,7 @@ fn usn_record_json_value_test() {
         Ok(record) => record,
         Err(error) => {
             eprintln!("{:?}", error);
-            panic!(error);
+            panic!("{}", error);
         }
     };
 
@@ -53,7 +53,7 @@ fn usn_records_json_test() {
 
     let v3_record = match record::UsnRecord::new(3, v3_record_buffer) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
 
     let v3_json_str = serde_json::to_string(&v3_record).unwrap();
@@ -72,7 +72,7 @@ fn usn_records_json_test() {
 
     let v2_record = match record::UsnRecord::new(2, v2_record_buffer) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
     let v2_json_str = serde_json::to_string(
         &v2_record
@@ -95,7 +95,7 @@ fn usn_record_v3_test() {
 
     let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
 
     assert_eq!(record.record_length, 112);
@@ -138,7 +138,7 @@ fn usn_record_v3_json_test() {
 
     let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
 
     let json_str = serde_json::to_string(&record).unwrap();
@@ -158,7 +158,7 @@ fn usn_record_v2_test() {
 
     let record = match record::UsnRecordV2::new(&mut Cursor::new(record_buffer)) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
 
     assert_eq!(record.record_length, 96);
@@ -192,11 +192,130 @@ fn usn_record_v2_json_test() {
 
     let record = match record::UsnRecordV2::new(&mut Cursor::new(record_buffer)) {
         Ok(record) => record,
-        Err(error) => panic!(error)
+        Err(error) => panic!("{}", error)
     };
     let json_str = serde_json::to_string(
         &record
     ).unwrap();
 
     assert_eq!(json_str, r#"{"record_length":96,"major_version":2,"minor_version":0,"file_reference":{"entry":115,"sequence":37224},"parent_reference":{"entry":141883,"sequence":7},"usn":20342374400,"timestamp":"2013-10-19T12:16:53.276040Z","reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED","file_name_length":32,"file_name_offset":60,"file_name":"BTDevManager.log"}"#);
+}
+
+#[test]
+fn usn_record_v3_128bit_test() {
+    // V3 record with 128-bit references
+    let record_buffer: &[u8] = &[
+        0x84,0x00,0x00,0x00,0x03,0x00,0x00,0x00,  // Record length (132), Major ver 3, Minor ver 0
+        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
+        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
+        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
+        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
+        0x02,0x00,0x00,0x00,                      // Reason
+        0x00,0x00,0x00,0x00,                      // Source Info
+        0x00,0x00,0x00,0x00,                      // Security ID
+        0x20,0x00,0x00,0x00,                      // File Attributes
+        0x18,0x00,                                // File name length (24 bytes = 12 chars * 2)
+        0x4C,0x00,                                // File name offset (76)
+        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "Test128.txt"
+        0x31,0x00,0x32,0x00,0x38,0x00,0x2E,0x00,
+        0x74,0x00,0x78,0x00,0x74,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
+    ];
+
+    let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
+        Ok(record) => record,
+        Err(error) => panic!("{}", error)
+    };
+
+    assert_eq!(record.record_length, 132);
+    assert_eq!(record.major_version, 3);
+    assert_eq!(record.minor_version, 0);
+    assert_eq!(record.file_reference.0, 18447307023663008441);
+    
+    let file_ref = record.file_reference.as_mft_reference();
+    assert_eq!(file_ref.entry, 35513);
+    assert_eq!(file_ref.sequence, 2);
+
+    assert_eq!(record.file_name, "Test128.txt\0");
+    assert_eq!(record.file_name_offset, 76);
+}
+
+#[test]
+fn usn_record_v4_test() {
+    let record_buffer: &[u8] = &[
+        0x90,0x00,0x00,0x00,0x04,0x00,0x00,0x00,  // Record length (144), Major ver 4, Minor ver 0
+        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
+        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
+        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
+        0x02,0x00,0x00,0x00,                      // Reason
+        0x00,0x00,0x00,0x00,                      // Source Info
+        0x00,0x00,0x00,0x00,                      // Remaining Extents
+        0x01,0x00,                                // Number of Extents
+        0x00,0x10,                                // Extent Size
+        0x20,0x00,0x00,0x00,                      // File Attributes
+        0x14,0x00,                                // File name length (20 bytes = 10 chars * 2)
+        0x54,0x00,                                // File name offset (84)
+        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
+        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "TestV4.txt"
+        0x56,0x00,0x34,0x00,0x2E,0x00,0x74,0x00,
+        0x78,0x00,0x74,0x00,0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
+    ];
+
+    let record = match record::UsnRecordV4::new(&mut Cursor::new(record_buffer)) {
+        Ok(record) => record,
+        Err(error) => panic!("{}", error)
+    };
+
+    assert_eq!(record.record_length, 144);
+    assert_eq!(record.major_version, 4);
+    assert_eq!(record.minor_version, 0);
+    assert_eq!(record.file_reference.0, 18447307023663008441); // Updated expected value
+    
+    let file_ref = record.file_reference.as_mft_reference();
+    assert_eq!(file_ref.entry, 35513);
+    assert_eq!(file_ref.sequence, 2);
+
+    assert_eq!(record.remaining_extents, 0);
+    assert_eq!(record.number_of_extents, 1);
+    assert_eq!(record.extent_size, 4096); // 0x1000
+    assert_eq!(record.file_name, "TestV4.txt");
+    assert_eq!(record.file_name_offset, 84); // V4 records use offset 84
+}
+
+#[test]
+fn usn_record_v4_json_test() {
+    let record_buffer: &[u8] = &[
+        0x90,0x00,0x00,0x00,0x04,0x00,0x00,0x00,  // Record length (144), Major ver 4
+        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
+        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
+        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
+        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
+        0x02,0x00,0x00,0x00,                      // Reason
+        0x00,0x00,0x00,0x00,                      // Source Info
+        0x00,0x00,0x00,0x00,                      // Remaining Extents
+        0x01,0x00,                                // Number of Extents
+        0x00,0x10,                                // Extent Size
+        0x20,0x00,0x00,0x00,                      // File Attributes
+        0x14,0x00,                                // File name length (20 bytes = 10 chars * 2)
+        0x54,0x00,                                // File name offset (84)
+        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
+        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "TestV4.txt"
+        0x56,0x00,0x34,0x00,0x2E,0x00,0x74,0x00,
+        0x78,0x00,0x74,0x00,0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
+    ];
+
+    let record = match record::UsnRecordV4::new(&mut Cursor::new(record_buffer)) {
+        Ok(record) => record,
+        Err(error) => panic!("{}", error)
+    };
+
+    let json_str = serde_json::to_string(&record).unwrap();
+    assert_eq!(json_str, r#"{"record_length":144,"major_version":4,"minor_version":0,"file_reference":{"u128":"18447307023663008441","entry":35513,"sequence":2},"parent_reference":{"u128":"18447307023662974920","entry":1992,"sequence":2},"usn":6889306208,"reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","remaining_extents":0,"number_of_extents":1,"extent_size":4096,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name_length":20,"file_name_offset":84,"file_name":"TestV4.txt","timestamp":"2019-09-08T00:56:52.138160Z"}"#);
 }

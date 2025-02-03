@@ -23,7 +23,7 @@ const SIZE_SEARCH: usize = 16384;
 
 lazy_static! {
     static ref RE_USN: bytes::Regex = bytes::Regex::new(
-        "(?-u)..\x00\x00(\x02|\x03)\x00\x00\x00"
+        "(?-u)..\x00\x00(\x02|\x03|\x04)\x00\x00\x00"
     ).expect("Regex Error");
 }
 
@@ -509,12 +509,20 @@ impl Iterator for IterRecordsByIndex {
                         continue;
                     }
 
+                    // Check if this is a 128-bit V3 record by examining record length and structure
+                    let expected_name_offset = if record_length >= 84 { // 128-bit V3 record
+                        76 // 128-bit V3 records have name offset at 76
+                    } else {
+                        60 // Legacy V3 records have name offset at 60
+                    };
+
                     // validate name offset
                     let name_offset = LittleEndian::read_u16(
-                        &self.block[self.index+74..self.index+76]
+                        &self.block[self.index + expected_name_offset - 2..self.index + expected_name_offset]
                     );
-                    if name_offset != 76 {
-                        debug!("name offset [{}] does not match 76 at offset {}", name_offset, self.index);
+                    if name_offset as usize != expected_name_offset {
+                        debug!("name offset [{}] does not match expected {} at offset {}", 
+                            name_offset, expected_name_offset, self.index);
                         self.index += 8;
                         continue;
                     }
@@ -534,9 +542,43 @@ impl Iterator for IterRecordsByIndex {
                     };
 
                     self.index += record_length as usize;
-
                     entry
-                }
+                },
+                4 => {
+                    // validate minor version
+                    if minor != 0 {
+                        debug!("minor version does not match major at offset {}", self.index);
+                        self.index += 8;
+                        continue;
+                    }
+
+                    // V4 records always use 128-bit references and have name offset at 84
+                    let name_offset = LittleEndian::read_u16(
+                        &self.block[self.index+82..self.index+84]
+                    );
+                    if name_offset != 84 {
+                        debug!("name offset [{}] does not match 84 at offset {}", name_offset, self.index);
+                        self.index += 8;
+                        continue;
+                    }
+
+                    // Parse entry
+                    let entry = match UsnEntry::new(
+                        self.meta.clone(),
+                        4,
+                        &self.block[self.index as usize ..]
+                    ) {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            debug!("error at offset {}: {}", self.index, error);
+                            self.index += 8;
+                            continue;
+                        }
+                    };
+
+                    self.index += record_length as usize;
+                    entry
+                },
                 other => {
                     debug!("Version not handled: {}; offset: {}", other, self.index);
                     self.index += 8;

@@ -12,6 +12,7 @@ use rusty_usn::mapping::FolderMapping;
 use rusty_usn::usn::{UsnParserSettings, UsnParser};
 use rusty_usn::record::UsnEntry;
 use rusty_usn::flags;
+use std::error::Error;
 
 static VERSION: &'static str = "1.2.0";
 
@@ -132,32 +133,33 @@ fn is_directory(source: &str)->bool{
 }
 
 
-fn process_directory(directory: &str, options: &ArgMatches) {
-    for dir_reader in fs::read_dir(directory) {
-        for entry_result in dir_reader {
-            match entry_result {
-                Ok(entry) => {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let path_string = path.into_os_string().into_string().unwrap();
-                        if path_string.to_lowercase().ends_with("$j"){
-                            process_file(
-                                &path_string, &options
-                            );
-                        }
-                    } else if path.is_dir(){
-                        let path_string = path.into_os_string().into_string().unwrap();
-                        process_directory(
-                            &path_string, &options
+fn process_directory(directory: &str, options: &ArgMatches) -> Result<(), Box<dyn Error>> {
+    let dir_entries = fs::read_dir(directory)?;
+    
+    for entry_result in dir_entries {
+        match entry_result {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_file() {
+                    let path_string = path.into_os_string().into_string().unwrap();
+                    if path_string.to_lowercase().ends_with("$j") {
+                        process_file(
+                            &path_string, options
                         );
                     }
-                },
-                Err(error) => {
-                    eprintln!("Error reading {} [{:?}]", directory, error);
+                } else if path.is_dir() {
+                    let path_string = path.into_os_string().into_string().unwrap();
+                    process_directory(
+                        &path_string, options
+                    )?;
                 }
+            },
+            Err(error) => {
+                eprintln!("Error reading {} [{:?}]", directory, error);
             }
         }
     }
+    Ok(())
 }
 
 
@@ -305,7 +307,10 @@ fn main() {
     };
 
     if is_directory(source_location) {
-        process_directory(source_location, &options);
+        if let Err(e) = process_directory(source_location, &options) {
+            eprintln!("Error processing directory: {}", e);
+            exit(-1);
+        }
     } else {
         process_file(source_location, &options);
     }
