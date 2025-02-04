@@ -12,9 +12,8 @@ use rusty_usn::mapping::FolderMapping;
 use rusty_usn::usn::{UsnParserSettings, UsnParser};
 use rusty_usn::record::UsnEntry;
 use rusty_usn::flags;
-use std::error::Error;
 
-static VERSION: &'static str = "1.2.0";
+static VERSION: &'static str = "1.3.0";
 
 
 fn is_a_non_negative_number(value: String) -> Result<(), String> {
@@ -133,33 +132,30 @@ fn is_directory(source: &str)->bool{
 }
 
 
-fn process_directory(directory: &str, options: &ArgMatches) -> Result<(), Box<dyn Error>> {
-    let dir_entries = fs::read_dir(directory)?;
-    
-    for entry_result in dir_entries {
-        match entry_result {
-            Ok(entry) => {
-                let path = entry.path();
-                if path.is_file() {
-                    let path_string = path.into_os_string().into_string().unwrap();
-                    if path_string.to_lowercase().ends_with("$j") {
-                        process_file(
-                            &path_string, options
-                        );
-                    }
-                } else if path.is_dir() {
-                    let path_string = path.into_os_string().into_string().unwrap();
-                    process_directory(
-                        &path_string, options
-                    )?;
+fn process_directory(directory: &str, options: &ArgMatches) {
+    let dir_entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("Error reading directory {}: {}", directory, e);
+            exit(-1);
+        }
+    };
+
+    for entry in dir_entries {
+        match entry {
+            Ok(dir_entry) => {
+                // Process the directory entry
+                let path = dir_entry.path();
+                if path.to_string_lossy().ends_with("$J") {
+                    process_file(path.to_str().unwrap(), options);
                 }
             },
-            Err(error) => {
-                eprintln!("Error reading {} [{:?}]", directory, error);
+            Err(e) => {
+                eprintln!("Error reading directory entry: {}", e);
+                continue;
             }
         }
     }
-    Ok(())
 }
 
 
@@ -232,10 +228,10 @@ fn process_file(file_location: &str, options: &ArgMatches) {
             let parent_reference = record.get_parent_reference();
             let file_name = record.get_file_name();
 
-            if file_attributes.contains(flags::FileAttributes::FILE_ATTRIBUTE_DIRECTORY){
+            if file_attributes.contains(flags::FileAttributes::DIRECTORY){
                 // Add mapping on a delete or rename old
-                if reason.contains(flags::Reason::USN_REASON_FILE_DELETE) ||
-                    reason.contains(flags::Reason::USN_REASON_RENAME_OLD_NAME) {
+                if reason.contains(flags::Reason::FILE_DELETE) ||
+                    reason.contains(flags::Reason::RENAME_OLD_NAME) {
                     mapping.add_mapping(
                         file_reference,
                         file_name.clone(),
@@ -307,10 +303,7 @@ fn main() {
     };
 
     if is_directory(source_location) {
-        if let Err(e) = process_directory(source_location, &options) {
-            eprintln!("Error processing directory: {}", e);
-            exit(-1);
-        }
+        process_directory(source_location, &options);
     } else {
         process_file(source_location, &options);
     }

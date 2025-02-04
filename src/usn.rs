@@ -23,7 +23,7 @@ const SIZE_SEARCH: usize = 16384;
 
 lazy_static! {
     static ref RE_USN: bytes::Regex = bytes::Regex::new(
-        "(?-u)..\x00\x00(\x02|\x03|\x04)\x00\x00\x00"
+        "(?-u)..\x00\x00(\x02|\x03)\x00\x00\x00"
     ).expect("Regex Error");
 }
 
@@ -365,50 +365,130 @@ impl Iterator for IterRecords {
                 continue;
             }
 
-            // Check versions
+            // Get version info from common header
             let major = LittleEndian::read_u16(&self.block[i+4..i+6]);
+            let minor = LittleEndian::read_u16(&self.block[i+6..i+8]);
 
-            let usn_entry = match major {
-                2 => {
-                    let minor = LittleEndian::read_u16(&self.block[i+6..i+8]);
-
-                    // validate minor version
-                    if minor != 0 {
-                        debug!("minor version does not match major at offset {}", entry_offset);
-                        continue;
+            // First check if we have a 128-bit reference number
+            let is_128bit = match major {
+                3 | 4 => {
+                    // For v3/v4, check if we have enough bytes for 128-bit references
+                    if record_length >= 76 { // Minimum size for v3 with 128-bit refs
+                        true
+                    } else {
+                        false // v3 with 64-bit refs
                     }
+                },
+                _ => false
+            };
 
-                    // validate name offset
-                    let name_offset = LittleEndian::read_u16(&self.block[i+58..i+60]);
-                    if name_offset != 60 {
-                        debug!("name offset does not match 60 at offset {}", entry_offset);
-                        continue;
-                    }
-
-                    // Create Entry Meta
-                    let entry_meta = EntryMeta::new(
-                        &self.source,
-                        entry_offset
-                    );
-
-                    // Parse entry
-                    let entry = match UsnEntry::new(
-                        entry_meta, 
-                        2,
-                        &self.block[start_of_hit as usize ..]
-                    ) {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            debug!("error at offset {}: {}", entry_offset, error);
+            let usn_entry = if is_128bit {
+                // Handle 128-bit reference records (v3/v4)
+                match major {
+                    3 => {
+                        // validate name offset for v3 128-bit
+                        let name_offset = LittleEndian::read_u16(&self.block[i+74..i+76]);
+                        if name_offset != 76 {
+                            debug!("name offset [{}] does not match 76 at offset {}", name_offset, entry_offset);
                             continue;
                         }
-                    };
 
-                    entry
-                },
-                other => {
-                    debug!("Version not handled: {}; offset: {}", other, entry_offset);
-                    continue;
+                        // Create Entry Meta
+                        let entry_meta = EntryMeta::new(
+                            &self.source,
+                            entry_offset
+                        );
+
+                        // Parse entry as v3 with 128-bit references
+                        match UsnEntry::new(
+                            entry_meta,
+                            3,
+                            &self.block[start_of_hit as usize ..]
+                        ) {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                debug!("error at offset {}: {}", entry_offset, error);
+                                continue;
+                            }
+                        }
+                    },
+                    4 => {
+                        debug!("USN v4 records not yet implemented at offset {}", entry_offset);
+                        continue;
+                    },
+                    _ => {
+                        debug!("Unexpected major version {} for 128-bit reference at offset {}", major, entry_offset);
+                        continue;
+                    }
+                }
+            } else {
+                // Handle original 64-bit reference records (v2 and v3-64bit)
+                match major {
+                    2 => {
+                        // validate minor version
+                        if minor != 0 {
+                            debug!("minor version does not match major at offset {}", entry_offset);
+                            continue;
+                        }
+
+                        // validate name offset
+                        let name_offset = LittleEndian::read_u16(&self.block[i+58..i+60]);
+                        if name_offset != 60 {
+                            debug!("name offset does not match 60 at offset {}", entry_offset);
+                            continue;
+                        }
+
+                        // Create Entry Meta
+                        let entry_meta = EntryMeta::new(
+                            &self.source,
+                            entry_offset
+                        );
+
+                        // Parse entry
+                        match UsnEntry::new(
+                            entry_meta,
+                            2,
+                            &self.block[start_of_hit as usize ..]
+                        ) {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                debug!("error at offset {}: {}", entry_offset, error);
+                                continue;
+                            }
+                        }
+                    },
+                    3 => {
+                        // Handle v3 with 64-bit references (legacy format)
+                        // validate name offset
+                        let name_offset = LittleEndian::read_u16(&self.block[i+58..i+60]);
+                        if name_offset != 60 {
+                            debug!("name offset does not match 60 at offset {}", entry_offset);
+                            continue;
+                        }
+
+                        // Create Entry Meta
+                        let entry_meta = EntryMeta::new(
+                            &self.source,
+                            entry_offset
+                        );
+
+                        // Parse as v2 format but preserve v3 version number
+                        match UsnEntry::new(
+                            entry_meta,
+                            3,
+                            &self.block[start_of_hit as usize ..]
+                        ) {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                debug!("error at offset {}: {}", entry_offset, error);
+                                continue;
+                            }
+                        }
+                    },
+                    other => {
+                        debug!("Version not handled: {}; offset: {}", other, entry_offset);
+                        continue;
+                    }
                 }
             };
 
@@ -463,126 +543,142 @@ impl Iterator for IterRecordsByIndex {
                 &self.block[self.index+6..self.index+8]
             );
 
-            let usn_entry = match major {
-                2 => {
-                    // validate minor version
-                    if minor != 0 {
-                        debug!("minor version does not match major at offset {}", self.index);
-                        self.index += 8;
-                        continue;
-                    }
-
-                    // validate name offset
-                    let name_offset = LittleEndian::read_u16(
-                        &self.block[self.index+58..self.index+60]
-                    );
-                    if name_offset != 60 {
-                        debug!("name offset does not match 60 at offset {}", self.index);
-                        self.index += 8;
-                        continue;
-                    }
-
-                    // Parse entry
-                    let entry = match UsnEntry::new(
-                        self.meta.clone(),
-                        2,
-                        &self.block[self.index as usize ..]
-                    ) {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            debug!("error at offset {}: {}", self.index, error);
-                            self.index += 8;
-                            continue;
-                        }
-                    };
-
-                    self.index += record_length as usize;
-
-                    entry
-                },
-                3 => {
-                    debug!("entry: {}", hex::encode(&self.block[self.index as usize .. self.index as usize + record_length as usize]));
-                    // validate minor version
-                    if minor != 0 {
-                        debug!("minor version does not match major at offset {}", self.index);
-                        self.index += 8;
-                        continue;
-                    }
-
-                    // Check if this is a 128-bit V3 record by examining record length and structure
-                    let expected_name_offset = if record_length >= 84 { // 128-bit V3 record
-                        76 // 128-bit V3 records have name offset at 76
+            // First check if we have a 128-bit reference number
+            let is_128bit = match major {
+                3 | 4 => {
+                    // For v3/v4, check if we have enough bytes for 128-bit references
+                    if record_length >= 76 { // Minimum size for v3 with 128-bit refs
+                        true
                     } else {
-                        60 // Legacy V3 records have name offset at 60
-                    };
-
-                    // validate name offset
-                    let name_offset = LittleEndian::read_u16(
-                        &self.block[self.index + expected_name_offset - 2..self.index + expected_name_offset]
-                    );
-                    if name_offset as usize != expected_name_offset {
-                        debug!("name offset [{}] does not match expected {} at offset {}", 
-                            name_offset, expected_name_offset, self.index);
-                        self.index += 8;
-                        continue;
+                        false // v3 with 64-bit refs
                     }
+                },
+                _ => false
+            };
 
-                    // Parse entry
-                    let entry = match UsnEntry::new(
-                        self.meta.clone(),
-                        3,
-                        &self.block[self.index as usize ..]
-                    ) {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            debug!("error at offset {}: {}", self.index, error);
+            let usn_entry = if is_128bit {
+                // Handle 128-bit reference records (v3/v4)
+                match major {
+                    3 => {
+                        // validate name offset for v3 128-bit
+                        let name_offset = LittleEndian::read_u16(
+                            &self.block[self.index+74..self.index+76]
+                        );
+                        if name_offset != 76 {
+                            debug!("name offset [{}] does not match 76 at offset {}", name_offset, self.index);
                             self.index += 8;
                             continue;
                         }
-                    };
 
-                    self.index += record_length as usize;
-                    entry
-                },
-                4 => {
-                    // validate minor version
-                    if minor != 0 {
-                        debug!("minor version does not match major at offset {}", self.index);
+                        // Parse entry as v3 with 128-bit references
+                        match UsnEntry::new(
+                            self.meta.clone(),
+                            3,
+                            &self.block[self.index..]
+                        ) {
+                            Ok(entry) => {
+                                self.index += record_length as usize;
+                                entry
+                            },
+                            Err(error) => {
+                                debug!("error at offset {}: {}", self.index, error);
+                                self.index += 8;
+                                continue;
+                            }
+                        }
+                    },
+                    4 => {
+                        debug!("USN v4 records not yet implemented at offset {}", self.index);
+                        self.index += 8;
+                        continue;
+                    },
+                    _ => {
+                        debug!("Unexpected major version {} for 128-bit reference at offset {}", major, self.index);
                         self.index += 8;
                         continue;
                     }
-
-                    // V4 records always use 128-bit references and have name offset at 84
-                    let name_offset = LittleEndian::read_u16(
-                        &self.block[self.index+82..self.index+84]
-                    );
-                    if name_offset != 84 {
-                        debug!("name offset [{}] does not match 84 at offset {}", name_offset, self.index);
-                        self.index += 8;
-                        continue;
-                    }
-
-                    // Parse entry
-                    let entry = match UsnEntry::new(
-                        self.meta.clone(),
-                        4,
-                        &self.block[self.index as usize ..]
-                    ) {
-                        Ok(entry) => entry,
-                        Err(error) => {
-                            debug!("error at offset {}: {}", self.index, error);
+                }
+            } else {
+                // Handle original 64-bit reference records (v2 and v3-64bit)
+                match major {
+                    2 => {
+                        // validate minor version
+                        if minor != 0 {
+                            debug!("minor version does not match major at offset {}", self.index);
                             self.index += 8;
                             continue;
                         }
-                    };
 
-                    self.index += record_length as usize;
-                    entry
-                },
-                other => {
-                    debug!("Version not handled: {}; offset: {}", other, self.index);
-                    self.index += 8;
-                    continue;
+                        // validate name offset
+                        let name_offset = LittleEndian::read_u16(
+                            &self.block[self.index+58..self.index+60]
+                        );
+                        if name_offset != 60 {
+                            debug!("name offset does not match 60 at offset {}", self.index);
+                            self.index += 8;
+                            continue;
+                        }
+
+                        // Parse entry
+                        let entry = match UsnEntry::new(
+                            self.meta.clone(),
+                            2,
+                            &self.block[self.index as usize ..]
+                        ) {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                debug!("error at offset {}: {}", self.index, error);
+                                self.index += 8;
+                                continue;
+                            }
+                        };
+
+                        self.index += record_length as usize;
+
+                        entry
+                    },
+                    3 => {
+                        debug!("entry: {}", hex::encode(&self.block[self.index as usize .. self.index as usize + record_length as usize]));
+                        // validate minor version
+                        if minor != 0 {
+                            debug!("minor version does not match major at offset {}", self.index);
+                            self.index += 8;
+                            continue;
+                        }
+
+                        // validate name offset
+                        let name_offset = LittleEndian::read_u16(
+                            &self.block[self.index+74..self.index+76]
+                        );
+                        if name_offset != 76 {
+                            debug!("name offset [{}] does not match 76 at offset {}", name_offset, self.index);
+                            self.index += 8;
+                            continue;
+                        }
+
+                        // Parse entry
+                        let entry = match UsnEntry::new(
+                            self.meta.clone(),
+                            3,
+                            &self.block[self.index as usize ..]
+                        ) {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                debug!("error at offset {}: {}", self.index, error);
+                                self.index += 8;
+                                continue;
+                            }
+                        };
+
+                        self.index += record_length as usize;
+
+                        entry
+                    },
+                    other => {
+                        debug!("Version not handled: {}; offset: {}", other, self.index);
+                        self.index += 8;
+                        continue;
+                    }
                 }
             };
 

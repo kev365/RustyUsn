@@ -103,14 +103,14 @@ impl UsnVolumeListener {
                         let file_attributes = usn_entry.record.get_file_attributes();
 
                         if file_attributes.contains(flags::FileAttributes::FILE_ATTRIBUTE_DIRECTORY){
-                            if reason_code.contains(flags::Reason::USN_REASON_RENAME_OLD_NAME) {
+                            if reason_code.contains(flags::Reason::RENAME_OLD_NAME) {
                                 // We can remove old names from the mapping because we no longer need these.
                                 // On new names, we add the name to the mapping.
                                 mapping.remove_mapping(
                                     file_ref
                                 );
                             }
-                            else if reason_code.contains(flags::Reason::USN_REASON_FILE_DELETE) {
+                            else if reason_code.contains(flags::Reason::FILE_DELETE) {
                                 // If we are starting from historical entries, we need to add deleted
                                 // entries to the map until we catch up to the current system, then we can 
                                 // start removing deleted entries. This is because our mapping cannot
@@ -126,8 +126,8 @@ impl UsnVolumeListener {
                                         file_ref
                                     );
                                 }
-                            } else if reason_code.contains(flags::Reason::USN_REASON_RENAME_NEW_NAME) ||
-                                reason_code.contains(flags::Reason::USN_REASON_FILE_CREATE) {
+                            } else if reason_code.contains(flags::Reason::RENAME_NEW_NAME) ||
+                                reason_code.contains(flags::Reason::FILE_CREATE) {
                                 // If its a new name or creation, we need to updated the mapping
                                 mapping.add_mapping(
                                     file_ref, 

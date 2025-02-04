@@ -69,26 +69,78 @@ impl EntryMeta {
 #[serde(untagged)]
 pub enum UsnRecord {
     V2(UsnRecordV2),
-    V3(UsnRecordV3),
-    V4(UsnRecordV4)
+    V3(UsnRecordV3)
 }
 impl UsnRecord {
-    pub fn new<R: Read>(version: u16, mut reader: R) -> Result<UsnRecord, UsnError> {
-        match version {
-            2 => Ok(UsnRecord::V2(UsnRecordV2::new(&mut reader)?)),
-            3 => Ok(UsnRecord::V3(UsnRecordV3::new(&mut reader)?)),
-            4 => Ok(UsnRecord::V4(UsnRecordV4::new(&mut reader)?)),
-            _ => Err(UsnError::unsupported_usn_version(
-                format!("Unsupported USN version {}", version)
-            ))
+    pub fn new<R: Read>(_version: u16, mut reader: R)-> Result<UsnRecord, UsnError> {
+        // First read record length to determine if we have 128-bit refs
+        let record_length = reader.read_u32::<LittleEndian>()?;
+        let major_version = reader.read_u16::<LittleEndian>()?;
+        let minor_version = reader.read_u16::<LittleEndian>()?;
+
+        // Check if this is a 128-bit reference record
+        let is_128bit = match major_version {
+            3 | 4 => record_length >= 76, // Minimum size for v3 with 128-bit refs
+            _ => false
+        };
+
+        if is_128bit {
+            match major_version {
+                3 => {
+                    let usn_record_v3 = UsnRecordV3::new_with_header(
+                        record_length,
+                        major_version,
+                        minor_version,
+                        &mut reader
+                    )?;
+                    Ok(UsnRecord::V3(usn_record_v3))
+                },
+                4 => {
+                    Err(UsnError::unsupported_usn_version(
+                        format!("USN v4 records not yet implemented")
+                    ))
+                },
+                _ => {
+                    Err(UsnError::unsupported_usn_version(
+                        format!("Unsupported USN version {} for 128-bit references", major_version)
+                    ))
+                }
+            }
+        } else {
+            // Handle original 64-bit reference records
+            match major_version {
+                2 => {
+                    let usn_record_v2 = UsnRecordV2::new_with_header(
+                        record_length,
+                        major_version,
+                        minor_version,
+                        &mut reader
+                    )?;
+                    Ok(UsnRecord::V2(usn_record_v2))
+                },
+                3 => {
+                    // Handle v3 with 64-bit refs as v2 format but preserve version
+                    let usn_record_v2 = UsnRecordV2::new_with_header(
+                        record_length,
+                        major_version,
+                        minor_version,
+                        &mut reader
+                    )?;
+                    Ok(UsnRecord::V2(usn_record_v2))
+                },
+                _ => {
+                    Err(UsnError::unsupported_usn_version(
+                        format!("Unsupported USN version {}", major_version)
+                    ))
+                }
+            }
         }
     }
 
     pub fn get_usn(&self) -> u64 {
         match self {
-            UsnRecord::V2(ref record) => record.usn,
-            UsnRecord::V3(ref record) => record.usn,
-            UsnRecord::V4(ref record) => record.usn,
+            UsnRecord::V2(ref record) => record.usn.clone(),
+            UsnRecord::V3(ref record) => record.usn.clone(),
         }
     }
 
@@ -96,7 +148,6 @@ impl UsnRecord {
         match self {
             UsnRecord::V2(ref record) => record.file_name.clone(),
             UsnRecord::V3(ref record) => record.file_name.clone(),
-            UsnRecord::V4(ref record) => record.file_name.clone(),
         }
     }
 
@@ -104,7 +155,6 @@ impl UsnRecord {
         match self {
             UsnRecord::V2(record) => record.file_attributes,
             UsnRecord::V3(record) => record.file_attributes,
-            UsnRecord::V4(record) => record.file_attributes,
         }
     }
 
@@ -112,7 +162,6 @@ impl UsnRecord {
         match self {
             UsnRecord::V2(record) => record.reason,
             UsnRecord::V3(record) => record.reason,
-            UsnRecord::V4(record) => record.reason,
         }
     }
 
@@ -120,7 +169,6 @@ impl UsnRecord {
         match self {
             UsnRecord::V2(record) => record.file_reference,
             UsnRecord::V3(record) => record.file_reference.as_mft_reference(),
-            UsnRecord::V4(record) => record.file_reference.as_mft_reference(),
         }
     }
 
@@ -128,7 +176,6 @@ impl UsnRecord {
         match self {
             UsnRecord::V2(record) => record.parent_reference,
             UsnRecord::V3(record) => record.parent_reference.as_mft_reference(),
-            UsnRecord::V4(record) => record.parent_reference.as_mft_reference(),
         }
     }
 
@@ -272,6 +319,60 @@ impl UsnRecordV2 {
             }
         )
     }
+
+    pub fn new_with_header<T: Read>(
+        record_length: u32,
+        major_version: u16,
+        minor_version: u16,
+        mut buffer: T
+    ) -> Result<UsnRecordV2, UsnError> {
+        // Read the file references
+        let file_reference = MftReference::from_reader(&mut buffer)?;
+        let parent_reference = MftReference::from_reader(&mut buffer)?;
+        
+        // Read the rest of the fields
+        let usn = buffer.read_u64::<LittleEndian>()?;
+        let timestamp = u64_to_datetime(buffer.read_u64::<LittleEndian>()?);
+        let reason = flags::Reason::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
+        let source_info = flags::SourceInfo::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
+        let security_id = buffer.read_u32::<LittleEndian>()?;
+        let file_attributes = flags::FileAttributes::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
+        let file_name_length = buffer.read_u16::<LittleEndian>()?;
+        let file_name_offset = buffer.read_u16::<LittleEndian>()?;
+
+        let mut name_buffer = vec![0; file_name_length as usize];
+        buffer.read_exact(&mut name_buffer)?;
+
+        let file_name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
+            Ok(file_name) => file_name,
+            Err(error) => {
+                return Err(UsnError::utf16_decode_error(
+                    format!(
+                        "Error Decoding Name [hex buffer: {}]: {:?}", 
+                        hex::encode(&name_buffer), 
+                        error
+                    )
+                ));
+            },
+        };
+
+        Ok(UsnRecordV2 {
+            record_length,
+            major_version,
+            minor_version,
+            file_reference,
+            parent_reference,
+            usn,
+            timestamp,
+            reason,
+            source_info,
+            security_id,
+            file_attributes,
+            file_name_length,
+            file_name_offset,
+            file_name
+        })
+    }
 }
 
 
@@ -285,7 +386,6 @@ impl Ntfs128Reference {
         self.0
     }
 
-    // Converts 128-bit reference to legacy 64-bit MftReference
     pub fn as_mft_reference(&self) -> MftReference {
         MftReference::from(
             LittleEndian::read_u64(
@@ -330,54 +430,19 @@ pub struct UsnRecordV3 {
     pub file_name: String
 }
 impl UsnRecordV3 {
-    pub fn new<T: Read>(mut buffer: T) -> Result<UsnRecordV3, UsnError> {
-        let record_length = buffer.read_u32::<LittleEndian>()?;
+    pub fn new_with_header<T: Read>(
+        record_length: u32,
+        major_version: u16,
+        minor_version: u16,
+        mut buffer: T
+    ) -> Result<UsnRecordV3, UsnError> {
+        // Read the 128-bit file references
+        let file_reference = Ntfs128Reference(buffer.read_u128::<LittleEndian>()?);
+        let parent_reference = Ntfs128Reference(buffer.read_u128::<LittleEndian>()?);
 
-        // Do some length checks
-        if record_length == 0 {
-            return Err(
-                UsnError::invalid_record(
-                    "Record length is 0.".to_string()
-                )
-            );
-        }
-        if record_length > 1024 {
-            return Err(
-                UsnError::invalid_record(
-                    "Record length is over 1024.".to_string()
-                )
-            );
-        }
-
-        let major_version = buffer.read_u16::<LittleEndian>()?;
-        if major_version != 3 {
-            return Err(
-                UsnError::invalid_record(
-                    "Major version is not 3".to_string()
-                )
-            );
-        }
-
-        let minor_version = buffer.read_u16::<LittleEndian>()?;
-        if minor_version != 0 {
-            return Err(
-                UsnError::invalid_record(
-                    "Minor version is not 0".to_string()
-                )
-            );
-        }
-
-        let file_reference = Ntfs128Reference(
-            buffer.read_u128::<LittleEndian>()?
-        );
-        let parent_reference = Ntfs128Reference(
-            buffer.read_u128::<LittleEndian>()?
-        );
-
+        // Read the rest of the fields
         let usn = buffer.read_u64::<LittleEndian>()?;
-        let timestamp = u64_to_datetime(
-            buffer.read_u64::<LittleEndian>()?
-        );
+        let timestamp = u64_to_datetime(buffer.read_u64::<LittleEndian>()?);
         let reason = flags::Reason::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
         let source_info = flags::SourceInfo::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
         let security_id = buffer.read_u32::<LittleEndian>()?;
@@ -385,6 +450,7 @@ impl UsnRecordV3 {
         let file_name_length = buffer.read_u16::<LittleEndian>()?;
         let file_name_offset = buffer.read_u16::<LittleEndian>()?;
 
+        // Read and decode the filename
         let mut name_buffer = vec![0; file_name_length as usize];
         buffer.read_exact(&mut name_buffer)?;
 
@@ -401,114 +467,21 @@ impl UsnRecordV3 {
             },
         };
 
-        Ok(
-            UsnRecordV3 {
-                record_length,
-                major_version,
-                minor_version,
-                file_reference,
-                parent_reference,
-                usn,
-                timestamp,
-                reason,
-                source_info,
-                security_id,
-                file_attributes,
-                file_name_length,
-                file_name_offset,
-                file_name
-            }
-        )
-    }
-}
-
-/// Represents a USN_RECORD_V4 structure
-/// https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v4
-#[derive(Serialize, Debug)]
-pub struct UsnRecordV4 {
-    pub record_length: u32,
-    pub major_version: u16,
-    pub minor_version: u16,
-    pub file_reference: Ntfs128Reference,
-    pub parent_reference: Ntfs128Reference,
-    pub usn: u64,
-    pub reason: flags::Reason,
-    pub source_info: flags::SourceInfo,
-    pub remaining_extents: u32,
-    pub number_of_extents: u16,
-    pub extent_size: u16,
-    pub file_attributes: flags::FileAttributes,
-    pub file_name_length: u16,
-    pub file_name_offset: u16,
-    pub file_name: String,
-    pub timestamp: DateTime<Utc>,
-}
-
-impl UsnRecordV4 {
-    pub fn new<T: Read>(mut buffer: T) -> Result<UsnRecordV4, UsnError> {
-        let record_length = buffer.read_u32::<LittleEndian>()?;
-
-        // Do some length checks
-        if record_length == 0 {
-            return Err(UsnError::invalid_record("Record length is 0.".to_string()));
-        }
-        if record_length > 1024 {
-            return Err(UsnError::invalid_record("Record length is over 1024.".to_string()));
-        }
-
-        let major_version = buffer.read_u16::<LittleEndian>()?;
-        if major_version != 4 {
-            return Err(UsnError::invalid_record("Major version is not 4".to_string()));
-        }
-
-        let minor_version = buffer.read_u16::<LittleEndian>()?;
-        if minor_version != 0 {
-            return Err(UsnError::invalid_record("Minor version is not 0".to_string()));
-        }
-
-        let file_reference = Ntfs128Reference(buffer.read_u128::<LittleEndian>()?);
-        let parent_reference = Ntfs128Reference(buffer.read_u128::<LittleEndian>()?);
-        let usn = buffer.read_u64::<LittleEndian>()?;
-        let reason = flags::Reason::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
-        let source_info = flags::SourceInfo::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
-        let remaining_extents = buffer.read_u32::<LittleEndian>()?;
-        let number_of_extents = buffer.read_u16::<LittleEndian>()?;
-        let extent_size = buffer.read_u16::<LittleEndian>()?;
-        let file_attributes = flags::FileAttributes::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
-        let file_name_length = buffer.read_u16::<LittleEndian>()?;
-        let file_name_offset = buffer.read_u16::<LittleEndian>()?;
-        let timestamp = u64_to_datetime(buffer.read_u64::<LittleEndian>()?);
-
-        let mut name_buffer = vec![0; file_name_length as usize];
-        buffer.read_exact(&mut name_buffer)?;
-
-        let file_name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
-            Ok(file_name) => file_name,
-            Err(error) => {
-                return Err(UsnError::utf16_decode_error(
-                    format!("Error Decoding Name [hex buffer: {}]: {:?}", 
-                    hex::encode(&name_buffer), error)
-                ));
-            },
-        };
-
-        Ok(UsnRecordV4 {
+        Ok(UsnRecordV3 {
             record_length,
             major_version,
             minor_version,
             file_reference,
             parent_reference,
             usn,
+            timestamp,
             reason,
             source_info,
-            remaining_extents,
-            number_of_extents,
-            extent_size,
+            security_id,
             file_attributes,
             file_name_length,
             file_name_offset,
-            file_name,
-            timestamp,
+            file_name
         })
     }
 }

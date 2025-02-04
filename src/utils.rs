@@ -1,13 +1,14 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 
 /// Convert a u64 Windows 100 nanosecond timestamp to a chrono DateTime
 ///
 pub fn u64_to_datetime(timestamp_u64: u64) -> DateTime<Utc> {
-    // Convert Windows timestamp (100ns since 1601) to Unix timestamp (seconds since 1970)
-    let unix_timestamp = ((timestamp_u64 / 10_000_000) as i64) - 11_644_473_600;
-    let nanos = ((timestamp_u64 % 10_000_000) * 100) as u32;
+    let nanos = (timestamp_u64 / 10) as i64; // Convert to microseconds
+    let base_time = NaiveDate::from_ymd_opt(1601, 1, 1)
+        .unwrap()
+        .and_hms_nano_opt(0, 0, 0, 0)
+        .unwrap();
     
-    // Use the new from_timestamp function
-    DateTime::from_timestamp(unix_timestamp, nanos)
-        .unwrap_or_else(|| DateTime::<Utc>::UNIX_EPOCH)
+    let datetime = base_time + chrono::Duration::microseconds(nanos);
+    DateTime::from_naive_utc_and_offset(datetime, Utc)
 }

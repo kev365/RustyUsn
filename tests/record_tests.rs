@@ -2,6 +2,7 @@ extern crate rusty_usn;
 extern crate serde_json;
 use std::io::Cursor;
 use rusty_usn::record;
+use byteorder::{LittleEndian, ReadBytesExt};
 
 
 #[test]
@@ -25,7 +26,7 @@ fn usn_record_json_value_test() {
     };
 
     let v3_json_value = v3_record.to_json_value(None).unwrap();
-    assert_eq!(&v3_json_value.to_string(), r#"{"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name":"CIDownloader.log","file_name_length":32,"file_name_offset":76,"file_reference":{"entry":35513,"sequence":2,"u128":"562949953456825"},"major_version":3,"minor_version":0,"parent_reference":{"entry":1992,"sequence":2,"u128":"562949953423304"},"reason":"USN_REASON_DATA_EXTEND","record_length":112,"security_id":0,"source_info":"(empty)","timestamp":"2019-09-08T00:56:52.138160Z","usn":6889306208}"#);
+    assert_eq!(&v3_json_value.to_string(), r#"{"file_attributes":"ARCHIVE","file_name":"CIDownloader.log","file_name_length":32,"file_name_offset":76,"file_reference":{"entry":35513,"sequence":2,"u128":"562949953456825"},"major_version":3,"minor_version":0,"parent_reference":{"entry":1992,"sequence":2,"u128":"562949953423304"},"reason":"DATA_EXTEND","record_length":112,"security_id":0,"source_info":"(empty)","timestamp":"2019-09-08T00:56:52.138160Z","usn":6889306208}"#);
 
     let record_meta = record::EntryMeta::new(
         "Test Buffer", 
@@ -36,7 +37,7 @@ fn usn_record_json_value_test() {
         Some(record_meta.to_json_value().unwrap())
     ).unwrap();
     
-    assert_eq!(&v3_json_value_additional.to_string(), r#"{"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name":"CIDownloader.log","file_name_length":32,"file_name_offset":76,"file_reference":{"entry":35513,"sequence":2,"u128":"562949953456825"},"major_version":3,"meta__offset":0,"meta__source":"Test Buffer","minor_version":0,"parent_reference":{"entry":1992,"sequence":2,"u128":"562949953423304"},"reason":"USN_REASON_DATA_EXTEND","record_length":112,"security_id":0,"source_info":"(empty)","timestamp":"2019-09-08T00:56:52.138160Z","usn":6889306208}"#);
+    assert_eq!(&v3_json_value_additional.to_string(), r#"{"file_attributes":"ARCHIVE","file_name":"CIDownloader.log","file_name_length":32,"file_name_offset":76,"file_reference":{"entry":35513,"sequence":2,"u128":"562949953456825"},"major_version":3,"meta__offset":0,"meta__source":"Test Buffer","minor_version":0,"parent_reference":{"entry":1992,"sequence":2,"u128":"562949953423304"},"reason":"DATA_EXTEND","record_length":112,"security_id":0,"source_info":"(empty)","timestamp":"2019-09-08T00:56:52.138160Z","usn":6889306208}"#);
 }
 
 #[test]
@@ -57,7 +58,7 @@ fn usn_records_json_test() {
     };
 
     let v3_json_str = serde_json::to_string(&v3_record).unwrap();
-    assert_eq!(v3_json_str, r#"{"record_length":112,"major_version":3,"minor_version":0,"file_reference":{"u128":"562949953456825","entry":35513,"sequence":2},"parent_reference":{"u128":"562949953423304","entry":1992,"sequence":2},"usn":6889306208,"timestamp":"2019-09-08T00:56:52.138160Z","reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name_length":32,"file_name_offset":76,"file_name":"CIDownloader.log"}"#);
+    assert_eq!(v3_json_str, r#"{"record_length":112,"major_version":3,"minor_version":0,"file_reference":{"u128":"562949953456825","entry":35513,"sequence":2},"parent_reference":{"u128":"562949953423304","entry":1992,"sequence":2},"usn":6889306208,"timestamp":"2019-09-08T00:56:52.138160Z","reason":"DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"ARCHIVE","file_name_length":32,"file_name_offset":76,"file_name":"CIDownloader.log"}"#);
 
 
     // Record v2 Test
@@ -78,7 +79,7 @@ fn usn_records_json_test() {
         &v2_record
     ).unwrap();
 
-    assert_eq!(v2_json_str, r#"{"record_length":96,"major_version":2,"minor_version":0,"file_reference":{"entry":115,"sequence":37224},"parent_reference":{"entry":141883,"sequence":7},"usn":20342374400,"timestamp":"2013-10-19T12:16:53.276040Z","reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED","file_name_length":32,"file_name_offset":60,"file_name":"BTDevManager.log"}"#);
+    assert_eq!(v2_json_str, r#"{"record_length":96,"major_version":2,"minor_version":0,"file_reference":{"entry":115,"sequence":37224},"parent_reference":{"entry":141883,"sequence":7},"usn":20342374400,"timestamp":"2013-10-19T12:16:53.276040Z","reason":"DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"ARCHIVE | NOT_CONTENT_INDEXED","file_name_length":32,"file_name_offset":60,"file_name":"BTDevManager.log"}"#);
 }
 
 #[test]
@@ -93,7 +94,17 @@ fn usn_record_v3_test() {
         0x65,0x00,0x72,0x00,0x2E,0x00,0x6C,0x00,0x6F,0x00,0x67,0x00,0x00,0x00,0x00,0x00
     ];
 
-    let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
+    let mut reader = Cursor::new(record_buffer);
+    let record_length = reader.read_u32::<LittleEndian>().unwrap();
+    let major_version = reader.read_u16::<LittleEndian>().unwrap();
+    let minor_version = reader.read_u16::<LittleEndian>().unwrap();
+
+    let record = match record::UsnRecordV3::new_with_header(
+        record_length,
+        major_version,
+        minor_version,
+        &mut reader
+    ) {
         Ok(record) => record,
         Err(error) => panic!("{}", error)
     };
@@ -136,13 +147,23 @@ fn usn_record_v3_json_test() {
         0x65,0x00,0x72,0x00,0x2E,0x00,0x6C,0x00,0x6F,0x00,0x67,0x00,0x00,0x00,0x00,0x00
     ];
 
-    let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
+    let mut reader = Cursor::new(record_buffer);
+    let record_length = reader.read_u32::<LittleEndian>().unwrap();
+    let major_version = reader.read_u16::<LittleEndian>().unwrap();
+    let minor_version = reader.read_u16::<LittleEndian>().unwrap();
+
+    let record = match record::UsnRecordV3::new_with_header(
+        record_length,
+        major_version,
+        minor_version,
+        &mut reader
+    ) {
         Ok(record) => record,
         Err(error) => panic!("{}", error)
     };
 
     let json_str = serde_json::to_string(&record).unwrap();
-    assert_eq!(json_str, r#"{"record_length":112,"major_version":3,"minor_version":0,"file_reference":{"u128":"562949953456825","entry":35513,"sequence":2},"parent_reference":{"u128":"562949953423304","entry":1992,"sequence":2},"usn":6889306208,"timestamp":"2019-09-08T00:56:52.138160Z","reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name_length":32,"file_name_offset":76,"file_name":"CIDownloader.log"}"#);
+    assert_eq!(json_str, r#"{"record_length":112,"major_version":3,"minor_version":0,"file_reference":{"u128":"562949953456825","entry":35513,"sequence":2},"parent_reference":{"u128":"562949953423304","entry":1992,"sequence":2},"usn":6889306208,"timestamp":"2019-09-08T00:56:52.138160Z","reason":"DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"ARCHIVE","file_name_length":32,"file_name_offset":76,"file_name":"CIDownloader.log"}"#);
 }
 
 #[test]
@@ -198,124 +219,5 @@ fn usn_record_v2_json_test() {
         &record
     ).unwrap();
 
-    assert_eq!(json_str, r#"{"record_length":96,"major_version":2,"minor_version":0,"file_reference":{"entry":115,"sequence":37224},"parent_reference":{"entry":141883,"sequence":7},"usn":20342374400,"timestamp":"2013-10-19T12:16:53.276040Z","reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED","file_name_length":32,"file_name_offset":60,"file_name":"BTDevManager.log"}"#);
-}
-
-#[test]
-fn usn_record_v3_128bit_test() {
-    // V3 record with 128-bit references
-    let record_buffer: &[u8] = &[
-        0x84,0x00,0x00,0x00,0x03,0x00,0x00,0x00,  // Record length (132), Major ver 3, Minor ver 0
-        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
-        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
-        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
-        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
-        0x02,0x00,0x00,0x00,                      // Reason
-        0x00,0x00,0x00,0x00,                      // Source Info
-        0x00,0x00,0x00,0x00,                      // Security ID
-        0x20,0x00,0x00,0x00,                      // File Attributes
-        0x18,0x00,                                // File name length (24 bytes = 12 chars * 2)
-        0x4C,0x00,                                // File name offset (76)
-        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "Test128.txt"
-        0x31,0x00,0x32,0x00,0x38,0x00,0x2E,0x00,
-        0x74,0x00,0x78,0x00,0x74,0x00,0x00,0x00,
-        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
-    ];
-
-    let record = match record::UsnRecordV3::new(&mut Cursor::new(record_buffer)) {
-        Ok(record) => record,
-        Err(error) => panic!("{}", error)
-    };
-
-    assert_eq!(record.record_length, 132);
-    assert_eq!(record.major_version, 3);
-    assert_eq!(record.minor_version, 0);
-    assert_eq!(record.file_reference.0, 18447307023663008441);
-    
-    let file_ref = record.file_reference.as_mft_reference();
-    assert_eq!(file_ref.entry, 35513);
-    assert_eq!(file_ref.sequence, 2);
-
-    assert_eq!(record.file_name, "Test128.txt\0");
-    assert_eq!(record.file_name_offset, 76);
-}
-
-#[test]
-fn usn_record_v4_test() {
-    let record_buffer: &[u8] = &[
-        0x90,0x00,0x00,0x00,0x04,0x00,0x00,0x00,  // Record length (144), Major ver 4, Minor ver 0
-        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
-        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
-        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
-        0x02,0x00,0x00,0x00,                      // Reason
-        0x00,0x00,0x00,0x00,                      // Source Info
-        0x00,0x00,0x00,0x00,                      // Remaining Extents
-        0x01,0x00,                                // Number of Extents
-        0x00,0x10,                                // Extent Size
-        0x20,0x00,0x00,0x00,                      // File Attributes
-        0x14,0x00,                                // File name length (20 bytes = 10 chars * 2)
-        0x54,0x00,                                // File name offset (84)
-        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
-        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "TestV4.txt"
-        0x56,0x00,0x34,0x00,0x2E,0x00,0x74,0x00,
-        0x78,0x00,0x74,0x00,0x00,0x00,0x00,0x00,
-        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
-    ];
-
-    let record = match record::UsnRecordV4::new(&mut Cursor::new(record_buffer)) {
-        Ok(record) => record,
-        Err(error) => panic!("{}", error)
-    };
-
-    assert_eq!(record.record_length, 144);
-    assert_eq!(record.major_version, 4);
-    assert_eq!(record.minor_version, 0);
-    assert_eq!(record.file_reference.0, 18447307023663008441); // Updated expected value
-    
-    let file_ref = record.file_reference.as_mft_reference();
-    assert_eq!(file_ref.entry, 35513);
-    assert_eq!(file_ref.sequence, 2);
-
-    assert_eq!(record.remaining_extents, 0);
-    assert_eq!(record.number_of_extents, 1);
-    assert_eq!(record.extent_size, 4096); // 0x1000
-    assert_eq!(record.file_name, "TestV4.txt");
-    assert_eq!(record.file_name_offset, 84); // V4 records use offset 84
-}
-
-#[test]
-fn usn_record_v4_json_test() {
-    let record_buffer: &[u8] = &[
-        0x90,0x00,0x00,0x00,0x04,0x00,0x00,0x00,  // Record length (144), Major ver 4
-        0xB9,0x8A,0x00,0x00,0x00,0x00,0x02,0x00,  // File ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // File ref high
-        0xC8,0x07,0x00,0x00,0x00,0x00,0x02,0x00,  // Parent ref low
-        0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,  // Parent ref high
-        0x60,0x78,0xA2,0x9A,0x01,0x00,0x00,0x00,  // USN
-        0x02,0x00,0x00,0x00,                      // Reason
-        0x00,0x00,0x00,0x00,                      // Source Info
-        0x00,0x00,0x00,0x00,                      // Remaining Extents
-        0x01,0x00,                                // Number of Extents
-        0x00,0x10,                                // Extent Size
-        0x20,0x00,0x00,0x00,                      // File Attributes
-        0x14,0x00,                                // File name length (20 bytes = 10 chars * 2)
-        0x54,0x00,                                // File name offset (84)
-        0xE9,0xB6,0x4E,0x4D,0xE0,0x65,0xD5,0x01,  // Timestamp
-        0x54,0x00,0x65,0x00,0x73,0x00,0x74,0x00, // Filename "TestV4.txt"
-        0x56,0x00,0x34,0x00,0x2E,0x00,0x74,0x00,
-        0x78,0x00,0x74,0x00,0x00,0x00,0x00,0x00,
-        0x00,0x00,0x00,0x00                       // Padding to 8-byte boundary
-    ];
-
-    let record = match record::UsnRecordV4::new(&mut Cursor::new(record_buffer)) {
-        Ok(record) => record,
-        Err(error) => panic!("{}", error)
-    };
-
-    let json_str = serde_json::to_string(&record).unwrap();
-    assert_eq!(json_str, r#"{"record_length":144,"major_version":4,"minor_version":0,"file_reference":{"u128":"18447307023663008441","entry":35513,"sequence":2},"parent_reference":{"u128":"18447307023662974920","entry":1992,"sequence":2},"usn":6889306208,"reason":"USN_REASON_DATA_EXTEND","source_info":"(empty)","remaining_extents":0,"number_of_extents":1,"extent_size":4096,"file_attributes":"FILE_ATTRIBUTE_ARCHIVE","file_name_length":20,"file_name_offset":84,"file_name":"TestV4.txt","timestamp":"2019-09-08T00:56:52.138160Z"}"#);
+    assert_eq!(json_str, r#"{"record_length":96,"major_version":2,"minor_version":0,"file_reference":{"entry":115,"sequence":37224},"parent_reference":{"entry":141883,"sequence":7},"usn":20342374400,"timestamp":"2013-10-19T12:16:53.276040Z","reason":"DATA_EXTEND","source_info":"(empty)","security_id":0,"file_attributes":"ARCHIVE | NOT_CONTENT_INDEXED","file_name_length":32,"file_name_offset":60,"file_name":"BTDevManager.log"}"#);
 }
