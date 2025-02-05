@@ -13,7 +13,7 @@ use rusty_usn::usn::{UsnParserSettings, UsnParser};
 use rusty_usn::record::UsnEntry;
 use rusty_usn::flags;
 
-static VERSION: &'static str = "1.3.0";
+static VERSION: &'static str = "1.6.0";
 
 
 fn is_a_non_negative_number(value: String) -> Result<(), String> {
